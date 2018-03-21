@@ -17,6 +17,9 @@ MOVING_AVERAGE_DECAY = 0.99
 MODEL_SAVE_PATH = "logs/log_sync"
 DATA_PATH = "../../datasets/MNIST_data"
 
+LEARNING_RATE_DECAY_FACTOR = 0.96  # Learning rate decay factor.
+INITIAL_LEARNING_RATE = 0.01       # Initial learning rate.
+
 # 和异步模式类似的设置flags。
 FLAGS = tf.app.flags.FLAGS
 
@@ -79,7 +82,7 @@ def loss(logits, labels):
   return tf.add_n(tf.get_collection('losses'), name='total_loss')
 
 
-def tower_loss(scope, images, labels):
+def tower_loss(images, labels):
     """Calculate the total loss on a single tower running the DNN model."""
     # Build inference Graph.
     layer_hidden_nums = [200, 100, 50, 25, 10]
@@ -87,10 +90,10 @@ def tower_loss(scope, images, labels):
     _ = loss(logits, labels)
     correct = tf.nn.in_top_k(logits, labels, 1)
     # Assemble all of the losses for the current tower only.
-    losses = tf.get_collection('losses', scope)
+    losses = tf.get_collection('losses')
     # Calculate the total loss for the current tower.
     total_loss = tf.add_n(losses, name='total_loss')
-
+    '''
     # Attach a scalar summary to all individual losses and the total loss; do the
     # same for the averaged version of the losses.
     for l in losses + [total_loss]:
@@ -98,24 +101,30 @@ def tower_loss(scope, images, labels):
         # session. This helps the clarity of presentation on tensorboard.
         loss_name = re.sub('%s_[0-9]*/' % TOWER_NAME, '', l.op.name)
         tf.summary.scalar(loss_name, l)
-
+    '''
     return total_loss, correct
 
 # 和异步模式类似的定义TensorFlow的计算图。唯一的区别在于使用
 # tf.train.SyncReplicasOptimizer函数处理同步更新。
-def build_model(x, y_, n_workers, is_chief):
-    regularizer = tf.contrib.layers.l2_regularizer(REGULARAZTION_RATE)
-    y = mnist_inference.inference(x, regularizer)
-    global_step = tf.contrib.framework.get_or_create_global_step()
+def train(x, y_, n_workers, is_chief):
+    global_step = tf.get_variable(
+        'global_step', [],
+        initializer=tf.constant_initializer(0), trainable=False)
 
-    cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y, labels=tf.argmax(y_, 1))
-    cross_entropy_mean = tf.reduce_mean(cross_entropy)
-    loss = cross_entropy_mean + tf.add_n(tf.get_collection('losses'))
-    learning_rate = tf.train.exponential_decay(
-        LEARNING_RATE_BASE,
-        global_step,
-        60000 / BATCH_SIZE,
-        LEARNING_RATE_DECAY)
+    # Calculate the learning rate schedule.
+    num_batches_per_epoch = (60000 / FLAGS.batch_size)
+    # decay_steps = int(num_batches_per_epoch * NUM_EPOCHS_PER_DECAY) # learning rate decay every NUM_EPOCHS_PER_DECAY epoch
+    decay_steps = int(num_batches_per_epoch)  # learning rate decay every epoch
+
+    loss, correct = tower_loss(x, y_)
+
+    # Decay the learning rate exponentially based on the number of steps.
+    # decayed_learning_rate=learning_rate*decay_rate^(global_step/decay_steps)
+    learning_rate = tf.train.exponential_decay(INITIAL_LEARNING_RATE,
+                                               global_step,
+                                               decay_steps,
+                                               LEARNING_RATE_DECAY_FACTOR,
+                                               staircase=True)  # use stair learning rate decay or gradually decay
 
     # 通过tf.train.SyncReplicasOptimizer函数实现同步更新。
     opt = tf.train.SyncReplicasOptimizer(
@@ -124,7 +133,7 @@ def build_model(x, y_, n_workers, is_chief):
         total_num_replicas=n_workers)
     sync_replicas_hook = opt.make_session_run_hook(is_chief)
     train_op = opt.minimize(loss, global_step=global_step)
-
+    '''
     if is_chief:
         variable_averages = tf.train.ExponentialMovingAverage(
             MOVING_AVERAGE_DECAY, global_step)
@@ -132,7 +141,7 @@ def build_model(x, y_, n_workers, is_chief):
             tf.trainable_variables())
         with tf.control_dependencies([variables_averages_op, train_op]):
             train_op = tf.no_op()
-
+    '''
     return global_step, loss, train_op, sync_replicas_hook
 
 
@@ -159,9 +168,9 @@ def main(argv=None):
         cluster=cluster)
 
     with tf.device(device_setter):
-        x = tf.placeholder(tf.float32, [None, mnist_inference.INPUT_NODE], name='x-input')
-        y_ = tf.placeholder(tf.float32, [None, mnist_inference.OUTPUT_NODE], name='y-input')
-        global_step, loss, train_op, sync_replicas_hook = build_model(x, y_, n_workers, is_chief)
+        x = tf.placeholder(tf.float32, [None, 784], name='x-input')
+        y_ = tf.placeholder(tf.float32, [None, 10], name='y-input')
+        global_step, loss, train_op, sync_replicas_hook = train(x, y_, n_workers, is_chief)
 
         # 把处理同步更新的hook也加进来。
         hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=TRAINING_STEPS)]
