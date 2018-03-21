@@ -7,29 +7,27 @@ from tensorflow.examples.tutorials.mnist import input_data
 
 
 # 配置神经网络的参数。
-BATCH_SIZE = 100
-LEARNING_RATE_BASE = 0.01
-LEARNING_RATE_DECAY = 0.99
-REGULARAZTION_RATE = 0.0001
-TRAINING_STEPS = 20000
+BATCH_SIZE = 128
+TRAINING_STEPS = 1000
 MOVING_AVERAGE_DECAY = 0.99
-
-MODEL_SAVE_PATH = "logs/log_sync"
-DATA_PATH = "../../datasets/MNIST_data"
-
 LEARNING_RATE_DECAY_FACTOR = 0.96  # Learning rate decay factor.
 INITIAL_LEARNING_RATE = 0.01       # Initial learning rate.
+
+MODEL_SAVE_PATH = "C:\\Boyuan\\MyPython\\DistributedModelSave"
+DATA_PATH = "C:\\Boyuan\\MyPython\\MNIST_Dataset"
+
+
 
 # 和异步模式类似的设置flags。
 FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_string('job_name', 'worker', ' "ps" or "worker" ')
 tf.app.flags.DEFINE_string(
-    'ps_hosts', ' tf-ps0:2222,tf-ps1:1111',
-    'Comma-separated list of hostname:port for the parameter server jobs. e.g. "tf-ps0:2222,tf-ps1:1111" ')
+    'ps_hosts', 'localhost:2221',
+    'Comma-separated list of hostname:port for the parameter server jobs. e.g. "tf-ps0:2221,tf-ps1:1111" ')
 tf.app.flags.DEFINE_string(
-    'worker_hosts', ' tf-worker0:2222,tf-worker1:1111',
-    'Comma-separated list of hostname:port for the worker jobs. e.g. "tf-worker0:2222,tf-worker1:1111" ')
+    'worker_hosts', 'localhost:2222,localhost:2223',
+    'Comma-separated list of hostname:port for the worker jobs. e.g. "tf-worker0:2222,tf-worker1:2223" ')
 tf.app.flags.DEFINE_integer('task_id', 0, 'Task ID of the worker/replica running the training.')
 
 
@@ -72,6 +70,8 @@ def loss(logits, labels):
   """
   # Calculate the average cross entropy loss across the batch.
   labels = tf.cast(labels, tf.int64)
+  #print("labels: ", labels)
+  #print("logits: ", logits)
   cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
       labels=labels, logits=logits, name='cross_entropy_per_example')
   cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
@@ -106,17 +106,17 @@ def tower_loss(images, labels):
 
 # 和异步模式类似的定义TensorFlow的计算图。唯一的区别在于使用
 # tf.train.SyncReplicasOptimizer函数处理同步更新。
-def train(x, y_, n_workers, is_chief):
-    global_step = tf.get_variable(
-        'global_step', [],
-        initializer=tf.constant_initializer(0), trainable=False)
+def train(images, labels, n_workers, is_chief):
+
+    global_step = tf.train.get_or_create_global_step()
+    #print("global_step in train(): ", global_step)
 
     # Calculate the learning rate schedule.
-    num_batches_per_epoch = (60000 / FLAGS.batch_size)
+    num_batches_per_epoch = (60000 / BATCH_SIZE)
     # decay_steps = int(num_batches_per_epoch * NUM_EPOCHS_PER_DECAY) # learning rate decay every NUM_EPOCHS_PER_DECAY epoch
     decay_steps = int(num_batches_per_epoch)  # learning rate decay every epoch
 
-    loss, correct = tower_loss(x, y_)
+    loss, correct = tower_loss(images, labels)
 
     # Decay the learning rate exponentially based on the number of steps.
     # decayed_learning_rate=learning_rate*decay_rate^(global_step/decay_steps)
@@ -161,7 +161,7 @@ def main(argv=None):
             server.join()
 
     is_chief = (FLAGS.task_id == 0)
-    mnist = input_data.read_data_sets(DATA_PATH, one_hot=True)
+    mnist = input_data.read_data_sets(DATA_PATH)
 
     device_setter = tf.train.replica_device_setter(
         worker_device="/job:worker/task:%d" % FLAGS.task_id,
@@ -169,7 +169,7 @@ def main(argv=None):
 
     with tf.device(device_setter):
         x = tf.placeholder(tf.float32, [None, 784], name='x-input')
-        y_ = tf.placeholder(tf.float32, [None, 10], name='y-input')
+        y_ = tf.placeholder(tf.int64, [None, ], name='y-input')
         global_step, loss, train_op, sync_replicas_hook = train(x, y_, n_workers, is_chief)
 
         # 把处理同步更新的hook也加进来。
@@ -178,30 +178,35 @@ def main(argv=None):
                                      log_device_placement=False)
 
         # 训练过程和异步一致。
+        # tf.train.MonitoredTrainingSession will automatically continue the training from checkpoint if interrupted.
         with tf.train.MonitoredTrainingSession(master=server.target,
                                                is_chief=is_chief,
                                                checkpoint_dir=MODEL_SAVE_PATH,
                                                hooks=hooks,
-                                               save_checkpoint_secs=60,
+                                               save_checkpoint_secs=None, # set to None then only save events file
                                                config=sess_config) as mon_sess:
-            print
-            "session started."
+            print("session started")
             step = 0
             start_time = time.time()
 
+            # The local step is not bound to the global step, the local step will just execute on its own,
+            # runs all the time to execute the training model, will stop based on the return of the global step
+            # and the training model will return global step based on its status
             while not mon_sess.should_stop():
                 xs, ys = mnist.train.next_batch(BATCH_SIZE)
                 _, loss_value, global_step_value = mon_sess.run(
                     [train_op, loss, global_step], feed_dict={x: xs, y_: ys})
-
+                #print("local_step: ", step)
+                #print("global_step: ", global_step_value)
                 if step > 0 and step % 100 == 0:
                     duration = time.time() - start_time
                     sec_per_batch = duration / global_step_value
                     format_str = "After %d training steps (%d global steps), " + \
                                  "loss on training batch is %g. (%.3f sec/batch)"
-                    print
-                    format_str % (step, global_step_value, loss_value, sec_per_batch)
+                    print(format_str % (step, global_step_value, loss_value, sec_per_batch))
                 step += 1
+
+            print("total step: %d, global_step: %d" % (step, global_step_value))
 
 
 if __name__ == "__main__":
