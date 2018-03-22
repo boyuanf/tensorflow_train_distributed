@@ -8,7 +8,7 @@ from tensorflow.examples.tutorials.mnist import input_data
 
 # 配置神经网络的参数。
 BATCH_SIZE = 128
-TRAINING_STEPS = 500
+TRAINING_STEPS = 2000
 MOVING_AVERAGE_DECAY = 0.99
 LEARNING_RATE_DECAY_FACTOR = 0.96  # Learning rate decay factor.
 INITIAL_LEARNING_RATE = 0.01       # Initial learning rate.
@@ -117,8 +117,14 @@ def train(images, labels, n_workers, is_chief):
     decay_steps = int(num_batches_per_epoch)  # learning rate decay every epoch
 
     loss, correct = tower_loss(images, labels)
-
     accuracy = tf.reduce_mean(tf.cast(correct, tf.float32), name='accuracy')
+
+    # only chief worker will save the graph, so add the task_id is not useless
+    loss_name = "loss_%d" % FLAGS.task_id
+    tf.summary.scalar(loss_name, loss)
+
+    accuracy_name = "accuracy_%d" % FLAGS.task_id
+    tf.summary.scalar(accuracy_name, accuracy)
 
     # Decay the learning rate exponentially based on the number of steps.
     # decayed_learning_rate=learning_rate*decay_rate^(global_step/decay_steps)
@@ -185,8 +191,8 @@ def main(argv=None):
                                                is_chief=is_chief,
                                                checkpoint_dir=MODEL_SAVE_PATH,
                                                hooks=hooks,
-                                               #save_checkpoint_secs=60, # set to None then only save events file
-                                               save_checkpoint_secs=None,  # set to None then only save events file
+                                               save_checkpoint_secs=60, # set to None then only save events file
+                                               #save_checkpoint_secs=None,  # set to None then only save events file
                                                config=sess_config) as mon_sess:
             print("session started")
             step = 0
