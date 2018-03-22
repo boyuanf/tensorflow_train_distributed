@@ -8,7 +8,7 @@ from tensorflow.examples.tutorials.mnist import input_data
 
 # 配置神经网络的参数。
 BATCH_SIZE = 128
-TRAINING_STEPS = 1000
+TRAINING_STEPS = 500
 MOVING_AVERAGE_DECAY = 0.99
 LEARNING_RATE_DECAY_FACTOR = 0.96  # Learning rate decay factor.
 INITIAL_LEARNING_RATE = 0.01       # Initial learning rate.
@@ -118,6 +118,8 @@ def train(images, labels, n_workers, is_chief):
 
     loss, correct = tower_loss(images, labels)
 
+    accuracy = tf.reduce_mean(tf.cast(correct, tf.float32), name='accuracy')
+
     # Decay the learning rate exponentially based on the number of steps.
     # decayed_learning_rate=learning_rate*decay_rate^(global_step/decay_steps)
     learning_rate = tf.train.exponential_decay(INITIAL_LEARNING_RATE,
@@ -142,7 +144,7 @@ def train(images, labels, n_workers, is_chief):
         with tf.control_dependencies([variables_averages_op, train_op]):
             train_op = tf.no_op()
     '''
-    return global_step, loss, train_op, sync_replicas_hook
+    return global_step, loss, accuracy, train_op, sync_replicas_hook
 
 
 def main(argv=None):
@@ -170,7 +172,7 @@ def main(argv=None):
     with tf.device(device_setter):
         x = tf.placeholder(tf.float32, [None, 784], name='x-input')
         y_ = tf.placeholder(tf.int64, [None, ], name='y-input')
-        global_step, loss, train_op, sync_replicas_hook = train(x, y_, n_workers, is_chief)
+        global_step, loss, accuracy, train_op, sync_replicas_hook = train(x, y_, n_workers, is_chief)
 
         # 把处理同步更新的hook也加进来。
         hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=TRAINING_STEPS)]
@@ -183,7 +185,8 @@ def main(argv=None):
                                                is_chief=is_chief,
                                                checkpoint_dir=MODEL_SAVE_PATH,
                                                hooks=hooks,
-                                               save_checkpoint_secs=None, # set to None then only save events file
+                                               #save_checkpoint_secs=60, # set to None then only save events file
+                                               save_checkpoint_secs=None,  # set to None then only save events file
                                                config=sess_config) as mon_sess:
             print("session started")
             step = 0
@@ -194,16 +197,17 @@ def main(argv=None):
             # and the training model will return global step based on its status
             while not mon_sess.should_stop():
                 xs, ys = mnist.train.next_batch(BATCH_SIZE)
-                _, loss_value, global_step_value = mon_sess.run(
-                    [train_op, loss, global_step], feed_dict={x: xs, y_: ys})
+                _, loss_value, accuracy_value, global_step_value = mon_sess.run(
+                    [train_op, loss, accuracy, global_step], feed_dict={x: xs, y_: ys})
                 #print("local_step: ", step)
                 #print("global_step: ", global_step_value)
                 if step > 0 and step % 100 == 0:
                     duration = time.time() - start_time
                     sec_per_batch = duration / global_step_value
                     format_str = "After %d training steps (%d global steps), " + \
-                                 "loss on training batch is %g. (%.3f sec/batch)"
-                    print(format_str % (step, global_step_value, loss_value, sec_per_batch))
+                                 "loss on training batch is %g, " + \
+                                 "accuracy is %g. (%.3f sec/batch)"
+                    print(format_str % (step, global_step_value, loss_value, accuracy_value, sec_per_batch))
                 step += 1
 
             print("total step: %d, global_step: %d" % (step, global_step_value))
