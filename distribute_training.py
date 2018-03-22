@@ -185,11 +185,14 @@ def main(argv=None):
         sess_config = tf.ConfigProto(allow_soft_placement=True,
                                      log_device_placement=False)
 
+        now = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        check_point_dir = "{}\\run-{}-checkpoint".format(MODEL_SAVE_PATH, now)
+
         # 训练过程和异步一致。
         # tf.train.MonitoredTrainingSession will automatically continue the training from checkpoint if interrupted.
         with tf.train.MonitoredTrainingSession(master=server.target,
                                                is_chief=is_chief,
-                                               checkpoint_dir=MODEL_SAVE_PATH,
+                                               checkpoint_dir=check_point_dir,
                                                hooks=hooks,
                                                save_checkpoint_secs=60, # set to None then only save events file
                                                #save_checkpoint_secs=None,  # set to None then only save events file
