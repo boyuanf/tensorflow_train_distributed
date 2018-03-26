@@ -29,6 +29,11 @@ tf.app.flags.DEFINE_string(
     'worker_hosts', 'localhost:2222,localhost:2223',
     'Comma-separated list of hostname:port for the worker jobs. e.g. "tf-worker0:2222,tf-worker1:2223" ')
 tf.app.flags.DEFINE_integer('task_id', 0, 'Task ID of the worker/replica running the training.')
+tf.app.flags.DEFINE_boolean(
+    "sync_replicas", False,
+    "Use the sync_replicas (synchronized replicas) mode, "
+    "wherein the parameter updates from workers are aggregated "
+    "before applied to avoid stale gradients")
 
 
 def forward_propagation(X, layer_hidden_nums, training, dropout_rate=0.01, regularizer_scale=0.01):
@@ -134,12 +139,16 @@ def train(images, labels, n_workers, is_chief):
                                                LEARNING_RATE_DECAY_FACTOR,
                                                staircase=True)  # use stair learning rate decay or gradually decay
 
-    # 通过tf.train.SyncReplicasOptimizer函数实现同步更新。
-    opt = tf.train.SyncReplicasOptimizer(
-        tf.train.GradientDescentOptimizer(learning_rate),
-        replicas_to_aggregate=n_workers,
-        total_num_replicas=n_workers)
-    sync_replicas_hook = opt.make_session_run_hook(is_chief)
+    if FLAGS.sync_replicas:
+        # 通过tf.train.SyncReplicasOptimizer函数实现同步更新。
+        opt = tf.train.SyncReplicasOptimizer(
+                tf.train.GradientDescentOptimizer(learning_rate),
+                replicas_to_aggregate=n_workers,
+                total_num_replicas=n_workers)
+        sync_replicas_hook = opt.make_session_run_hook(is_chief)
+    else:
+        opt = tf.train.GradientDescentOptimizer(learning_rate)
+
     train_op = opt.minimize(loss, global_step=global_step)
     '''
     if is_chief:
@@ -150,7 +159,10 @@ def train(images, labels, n_workers, is_chief):
         with tf.control_dependencies([variables_averages_op, train_op]):
             train_op = tf.no_op()
     '''
-    return global_step, loss, accuracy, train_op, sync_replicas_hook
+    if FLAGS.sync_replicas:
+        return global_step, loss, accuracy, train_op, sync_replicas_hook
+    else:
+        return global_step, loss, accuracy, train_op
 
 
 def main(argv=None):
@@ -178,10 +190,14 @@ def main(argv=None):
     with tf.device(device_setter):
         x = tf.placeholder(tf.float32, [None, 784], name='x-input')
         y_ = tf.placeholder(tf.int64, [None, ], name='y-input')
-        global_step, loss, accuracy, train_op, sync_replicas_hook = train(x, y_, n_workers, is_chief)
+        if FLAGS.sync_replicas:
+            global_step, loss, accuracy, train_op, sync_replicas_hook = train(x, y_, n_workers, is_chief)
+            # 把处理同步更新的hook也加进来。
+            hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=TRAINING_STEPS)]
+        else:
+            global_step, loss, accuracy, train_op = train(x, y_, n_workers, is_chief)
+            hooks = [tf.train.StopAtStepHook(last_step=TRAINING_STEPS)]
 
-        # 把处理同步更新的hook也加进来。
-        hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=TRAINING_STEPS)]
         sess_config = tf.ConfigProto(allow_soft_placement=True,
                                      log_device_placement=False)
 
