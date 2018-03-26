@@ -33,7 +33,7 @@ tf.app.flags.DEFINE_boolean(
 tf.app.flags.DEFINE_string('train_dir', 'C:\\Boyuan\\MyPython\\MNIST_Dataset',
                            """Directory where to read data, write event logs """
                            """and checkpoint.""")
-tf.app.flags.DEFINE_integer('read_thread_num', 2,
+tf.app.flags.DEFINE_integer('read_thread_num', 4,
                             """Number of the threads reading the input file.""")
 
 #set the num_epochs to None, will cycle through the strings in string_tensor an unlimited number of times
@@ -156,9 +156,12 @@ def train(n_workers, is_chief):
     # decay_steps = int(num_batches_per_epoch * NUM_EPOCHS_PER_DECAY) # learning rate decay every NUM_EPOCHS_PER_DECAY epoch
     decay_steps = int(num_batches_per_epoch)  # learning rate decay every epoch
 
-    with tf.device('/cpu:0'):  # Leave read thread to CPU
+
+    with tf.device('/cpu:0'):  # Leave read thread to CPU, have to set, otherwise the read progress no work as expected
         # Get images and labels for MNIST.
         images_batch, labels_batch = get_input('mnist_train', BATCH_SIZE, FLAGS.read_thread_num)
+
+    '''images_batch, labels_batch = get_input('mnist_train', BATCH_SIZE, FLAGS.read_thread_num)'''
 
     loss, correct = tower_loss(images_batch, labels_batch)
     accuracy = tf.reduce_mean(tf.cast(correct, tf.float32), name='accuracy')
